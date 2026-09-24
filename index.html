@@ -786,303 +786,134 @@
     // ===============================================
     // Initialization and Event Handlers
     // ===============================================
-    document.addEventListener('DOMContentLoaded', function() {
-      // Initialize UI components
-      const dropzone = document.getElementById('dropzone');
-      const fileInput = document.createElement('input');
-      fileInput.type = 'file';
-      fileInput.multiple = true;
-      fileInput.accept = '.csv,.xlsx,.xls,.ods,.txt,.json,.xml,.html,.htm';
-      fileInput.style.display = 'none';
-      document.body.appendChild(fileInput);
-      
-      // Set up event listeners
-      dropzone.addEventListener('click', () => fileInput.click());
-      dropzone.addEventListener('dragover', e => {
-        e.preventDefault();
-        dropzone.classList.add('dragover');
-      });
-      dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
-      dropzone.addEventListener('drop', handleFileDrop);
-      fileInput.addEventListener('change', handleFileSelect);
-      
-      document.getElementById('toolbox-update').addEventListener('click', updatePreview);
-      document.getElementById('toolbox-reformat').addEventListener('click', reformatCSV);
-      document.getElementById('toolbox-adjust').addEventListener('click', adjustFormat);
-      document.getElementById('download').addEventListener('click', downloadCSV);
-      document.getElementById('h2o-export').addEventListener('click', showH2OExportModal);
-      document.getElementById('confirm-h2o-export').addEventListener('click', exportForH2O);
-      document.getElementById('cancel-h2o-export').addEventListener('click', closeH2OExportModal);
-      document.getElementById('close-h2o-modal').addEventListener('click', closeH2OExportModal);
-      document.getElementById('toggle-dark-mode').addEventListener('click', toggleDarkMode);
-      
-      document.querySelectorAll('.tab').forEach(tab => {
-        tab.addEventListener('click', () => switchTab(tab.dataset.tab));
-      });
-      
-      document.getElementById('h2o-template').addEventListener('change', showTemplateDescription);
-      document.getElementById('apply-template').addEventListener('click', applyH2OTemplate);
-      document.getElementById('validate-h2o').addEventListener('click', validateH2OFormat);
-      document.getElementById('toggle-preview').addEventListener('click', toggleModelPreview);
-      
-      document.getElementById('split-ratio').addEventListener('input', updateSplitPercentages);
-      document.getElementById('apply-split').addEventListener('click', splitDataset);
-      
-      document.getElementById('import-persona').addEventListener('click', () => {
-        document.getElementById('persona-file').click();
-      });
-      document.getElementById('persona-file').addEventListener('change', importPersonaData);
-      
-      // Apply dark mode if enabled
-      if (darkMode) {
-        document.body.classList.add('dark-mode');
+        function initMitoCore(){
+      const dropzone=document.getElementById('dropzone'),fileInput=document.createElement('input');
+      fileInput.type='file';fileInput.multiple=true;fileInput.accept='.csv,.tsv,.xlsx,.xls,.ods,.txt,.json,.xml,.html,.htm';fileInput.style.display='none';document.body.appendChild(fileInput);
+      const on=(id,event,handler)=>{const el=document.getElementById(id);if(el)el.addEventListener(event,handler);};
+      if(dropzone){dropzone.addEventListener('click',()=>fileInput.click());dropzone.addEventListener('dragover',e=>{e.preventDefault();dropzone.classList.add('dragover');});dropzone.addEventListener('dragleave',()=>dropzone.classList.remove('dragover'));dropzone.addEventListener('drop',handleFileDrop);}
+      fileInput.addEventListener('change',handleFileSelect);
+      on('toolbox-update','click',updatePreview);on('toolbox-reformat','click',reformatCSV);on('toolbox-adjust','click',adjustFormat);on('download','click',downloadCSV);
+      on('h2o-export','click',showH2OExportModal);on('confirm-h2o-export','click',exportForH2O);on('cancel-h2o-export','click',closeH2OExportModal);on('close-h2o-modal','click',closeH2OExportModal);
+      on('toggle-dark-mode','click',toggleDarkMode);on('h2o-template','change',showTemplateDescription);on('apply-template','click',applyH2OTemplate);on('validate-h2o','click',validateH2OFormat);on('toggle-preview','click',toggleModelPreview);
+      on('split-ratio','input',updateSplitPercentages);on('apply-split','click',splitDataset);on('import-persona','click',()=>document.getElementById('persona-file')?.click());on('persona-file','change',importPersonaData);
+      document.querySelectorAll('.tab').forEach(tab=>tab.addEventListener('click',()=>switchTab(tab.dataset.tab)));
+      if(darkMode)document.body.classList.add('dark-mode');initializeApiKeysUI();ensureSplitSeedControl();
+    }
+    document.addEventListener('DOMContentLoaded', initMitoCore);
+
+
+    function syncEditorState(){const el=document.getElementById('toolbox-input');if(el)csvData=el.value||'';}
+
+    function parseDelimitedText(text,delimiter=','){
+      const rows=[];let row=[],cell='',quoted=false;const input=String(text??'').replace(/^\uFEFF/,'');
+      for(let i=0;i<input.length;i++){const c=input[i];
+        if(quoted){if(c==='"'&&input[i+1]==='"'){cell+='"';i++;}else if(c==='"')quoted=false;else cell+=c;}
+        else if(c==='"')quoted=true;
+        else if(c===delimiter){row.push(cell);cell='';}
+        else if(c==='\r'){if(input[i+1]==='\n')i++;row.push(cell);rows.push(row);row=[];cell='';}
+        else if(c==='\n'){row.push(cell);rows.push(row);row=[];cell='';}
+        else cell+=c;
       }
-      
-      // Initialize API Keys UI
-      initializeApiKeysUI();
-      
-      // Register NOAA API if not already registered
-      if (!apiRegistry.services['noaa']) {
-        apiRegistry.services['noaa'] = {
-          baseUrl: 'https://api.weather.gov',
-          authType: 'none',
-          operations: {
-            'get_forecast': {
-              name: 'Get Weather Forecast by Coordinates',
-              endpoint: '/points/{latitude},{longitude}',
-              method: 'GET',
-              params: [
-                {id: 'latitude', name: 'Latitude', type: 'string', required: true},
-                {id: 'longitude', name: 'Longitude', type: 'string', required: true}
-              ],
-              outputFormat: 'json'
-            }
-          }
-        };
-      }
-      
-      // Auto-load San Francisco forecast on page load
-      if (document.getElementById('location')) {
-        document.getElementById('location').value = "San Francisco, CA";
-        setTimeout(function() {
-          getForecastByLocation();
-        }, 500);
-      }
-    });
-    
+      if(quoted)throw new Error('Unclosed quoted field.');
+      if(cell.length||row.length){row.push(cell);rows.push(row);}
+      return rows.filter((r,idx)=>idx===0||r.some(v=>String(v).length));
+    }
+
+    function delimiterScore(text,delimiter){try{const rows=parseDelimitedText(text,delimiter).slice(0,20);if(!rows.length)return 0;const w=rows.map(r=>r.length),max=Math.max(...w),min=Math.min(...w);return max>1?max*10-(max-min)*3:0;}catch{return 0;}}
+
+    function detectDelimiter(text,extension=''){if(extension==='tsv')return '\t';const c=[',','\t',';','|'];c.sort((a,b)=>delimiterScore(text,b)-delimiterScore(text,a));return c[0];}
+
+    function parseDelimitedAuto(text,extension=''){return parseDelimitedText(text,detectDelimiter(text,extension));}
+
+    function parseCSV(text){return parseDelimitedText(text,',');}
+
+    function serializeCSV(rows){return rows.map(r=>r.map(v=>{const x=v===null||v===undefined?'':String(v);return '"'+x.replace(/"/g,'""')+'"';}).join(',')).join('\n');}
+
+    function commitRows(rows,message){csvData=serializeCSV(rows);const el=document.getElementById('toolbox-input');if(el)el.value=csvData;updatePreview();setStatus(message);}
+
+    function flattenObject(value,prefix='',out={}){
+      if(value===null||value===undefined){if(prefix)out[prefix]='';}
+      else if(Array.isArray(value)){if(prefix)out[prefix]=JSON.stringify(value);}
+      else if(typeof value==='object'){for(const[k,v]of Object.entries(value))flattenObject(v,prefix?prefix+'.'+k:k,out);}
+      else if(prefix)out[prefix]=value;
+      return out;
+    }
+
+    function recordsToRows(records){if(!records.length)return[];const flat=records.map(r=>flattenObject(r));const headers=[...new Set(flat.flatMap(r=>Object.keys(r)))];return[headers,...flat.map(r=>headers.map(h=>r[h]??''))];}
+
+    function jsonValueToRows(value){
+      if(Array.isArray(value)){if(!value.length)return[];if(value.every(v=>v&&typeof v==='object'&&!Array.isArray(v)))return recordsToRows(value);return[['value'],...value.map(v=>[typeof v==='object'?JSON.stringify(v):v])];}
+      if(value&&typeof value==='object'){const arrays=Object.values(value).filter(v=>Array.isArray(v)&&v.length);if(arrays.length===1)return jsonValueToRows(arrays[0]);return recordsToRows([value]);}
+      return[['value'],[value??'']];
+    }
+
+    async function convertSpreadsheetFile(file){
+      const data=new Uint8Array(await file.arrayBuffer()),workbook=XLSX.read(data,{type:'array'});
+      if(!workbook.SheetNames.length)throw new Error('No worksheets detected.');
+      const blocks=workbook.SheetNames.map(name=>({name,rows:XLSX.utils.sheet_to_json(workbook.Sheets[name],{header:1,defval:'',raw:false}).filter(r=>r.some(v=>String(v).trim()!==''))})).filter(x=>x.rows.length);
+      if(!blocks.length)throw new Error('No data found in spreadsheet.');
+      if(blocks.length===1)return{format:'spreadsheet',rows:blocks[0].rows};
+      return{format:'spreadsheet',rows:mergeDatasets(blocks.map(b=>({source:b.name,rows:b.rows})),'__sheet').rows};
+    }
+
+    async function convertJsonFile(file){const rows=jsonValueToRows(JSON.parse(await file.text()));if(!rows.length)throw new Error('JSON contains no tabular data.');return{format:'json',rows};}
+
+    async function convertHtmlFile(file){
+      const doc=new DOMParser().parseFromString(await file.text(),'text/html'),tables=[...doc.querySelectorAll('table')];
+      if(!tables.length)throw new Error('No tables found in HTML.');
+      const d=tables.map((table,i)=>({source:'Table_'+(i+1),rows:[...table.querySelectorAll('tr')].map(tr=>[...tr.querySelectorAll('th,td')].map(td=>td.textContent.trim())).filter(r=>r.length)})).filter(x=>x.rows.length);
+      return d.length===1?{format:'html',rows:d[0].rows}:{format:'html',rows:mergeDatasets(d,'__table').rows};
+    }
+
+    function flattenXmlElement(el){if(!el.children.length)return el.textContent;const o={};[...el.attributes].forEach(a=>o['@'+a.name]=a.value);[...el.children].forEach(c=>o[c.tagName]=c.children.length?flattenXmlElement(c):c.textContent);return JSON.stringify(o);}
+
+    async function convertXmlFile(file){
+      const xml=new DOMParser().parseFromString(await file.text(),'text/xml');if(xml.querySelector('parsererror'))throw new Error('Invalid XML document.');
+      const children=[...xml.documentElement.children];if(!children.length)throw new Error('No record elements found in XML.');
+      const counts={};children.forEach(el=>counts[el.tagName]=(counts[el.tagName]||0)+1);const rowTag=Object.entries(counts).sort((a,b)=>b[1]-a[1])[0][0];
+      const records=children.filter(el=>el.tagName===rowTag).map(el=>{const rec={};[...el.attributes].forEach(a=>rec['@'+a.name]=a.value);[...el.children].forEach(c=>rec[c.tagName]=c.children.length?flattenXmlElement(c):c.textContent);return rec;});
+      return{format:'xml',rows:recordsToRows(records)};
+    }
+
+    async function convertFileToDataset(file){
+      const ext=(file.name.split('.').pop()||'').toLowerCase();
+      if(['xlsx','xls','ods'].includes(ext))return convertSpreadsheetFile(file);
+      if(ext==='json')return convertJsonFile(file);
+      if(['html','htm'].includes(ext))return convertHtmlFile(file);
+      if(ext==='xml')return convertXmlFile(file);
+      if(['csv','tsv','txt'].includes(ext)){const rows=parseDelimitedAuto(await file.text(),ext);if(!rows.length)throw new Error(file.name+' contains no rows.');return{format:ext,rows};}
+      throw new Error('Unsupported file type: '+(ext||'unknown'));
+    }
+
+    function mergeDatasets(datasets,sourceColumn='__source_file'){
+      if(datasets.length===1)return{rows:datasets[0].rows};
+      const headers=[...new Set(datasets.flatMap(d=>d.rows[0]||[]))],out=[[sourceColumn,...headers]];
+      for(const d of datasets){const local=d.rows[0]||[],idx=new Map(local.map((h,i)=>[h,i]));for(const r of d.rows.slice(1))out.push([d.source,...headers.map(h=>r[idx.get(h)]??'')]);}
+      return{rows:out};
+    }
+
+    function ensureSplitSeedControl(){
+      const split=document.querySelector('.split-controls');if(!split||document.getElementById('split-seed'))return;
+      const wrap=document.createElement('div');wrap.className='split-slider';wrap.innerHTML='<label for="split-seed">Split seed:</label><input type="text" id="split-seed" value="MITO-Core" style="flex:1">';split.insertBefore(wrap,document.getElementById('apply-split'));
+    }
+
+    function seededRandom(seed){let h=2166136261;for(const ch of String(seed)){h^=ch.charCodeAt(0);h=Math.imul(h,16777619);}return function(){h+=0x6D2B79F5;let t=h;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return((t^(t>>>14))>>>0)/4294967296;};}
+
     // ===============================================
     // File Handling Functions
     // ===============================================
-    function handleFileDrop(e) {
-      e.preventDefault();
-      dropzone.classList.remove('dragover');
-      
-      if (e.dataTransfer.files.length > 0) {
-        processFiles(e.dataTransfer.files);
-      }
+    function handleFileDrop(e){e.preventDefault();document.getElementById('dropzone')?.classList.remove('dragover');if(e.dataTransfer?.files?.length)processFiles(e.dataTransfer.files);}
+    function handleFileSelect(e){if(e.target?.files?.length)processFiles(e.target.files);}
+    async function processFiles(files){
+      const list=Array.from(files||[]);if(!list.length)return;setStatus('Processing '+list.length+' file'+(list.length===1?'':'s')+'...');
+      try{const datasets=[];for(const file of list){const d=await convertFileToDataset(file);datasets.push({...d,source:file.name});}const merged=mergeDatasets(datasets);csvData=serializeCSV(merged.rows);showToolbox(csvData);setStatus('Loaded '+list.length+' file'+(list.length===1?'':'s')+'. '+Math.max(0,merged.rows.length-1)+' data rows ready.');}
+      catch(error){setStatus('File processing error: '+error.message,true);}
     }
-    
-    function handleFileSelect(e) {
-      if (e.target.files.length > 0) {
-        processFiles(e.target.files);
-      }
-    }
-    
-    function processFiles(files) {
-      const file = files[0]; // Process only the first file for now
-      
-      if (!file) return;
-      
-      setStatus(`Processing ${file.name}...`);
-      
-      const extension = file.name.split('.').pop().toLowerCase();
-      const reader = new FileReader();
-      
-      if (['xlsx', 'xls', 'ods'].includes(extension)) {
-        readSheetFileToCsv(file);
-      } else if (extension === 'json') {
-        readJsonToCsv(file);
-      } else if (['html', 'htm'].includes(extension)) {
-        readHtmlToCsv(file);
-      } else if (['csv', 'tsv', 'txt'].includes(extension)) {
-        reader.onload = function(e) {
-          csvData = e.target.result;
-          setStatus(`File loaded: ${file.name}`);
-          showToolbox(csvData);
-        };
-        reader.readAsText(file);
-      } else if (extension === 'xml') {
-        readXmlToCsv(file);
-      } else {
-        setStatus(`Unsupported file type: ${extension}`, true);
-      }
-    }
-    
-    function readSheetFileToCsv(file) {
-      const reader = new FileReader();
-      reader.onload = function(e) {
-        try {
-          const data = new Uint8Array(e.target.result);
-          const workbook = XLSX.read(data, {type: 'array'});
-          const sheetName = workbook.SheetNames[0];
-          if (!sheetName) throw new Error("No sheet detected in file.");
-          const worksheet = workbook.Sheets[sheetName];
-          csvData = XLSX.utils.sheet_to_csv(worksheet);
-          if (!csvData.trim()) throw new Error("No data found in spreadsheet.");
-          setStatus("Excel/ODS file loaded and converted.");
-          showToolbox(csvData);
-        } catch (error) {
-          setStatus(`Error processing spreadsheet: ${error.message}`, true);
-        }
-      };
-      reader.onerror = () => setStatus("File read error.", true);
-      reader.readAsArrayBuffer(file);
-    }
-    
-    function readJsonToCsv(file) {
-      const reader = new FileReader();
-      reader.onload = function(e) {
-        try {
-          const jsonData = JSON.parse(e.target.result);
-          
-          // Check if it's an array of objects
-          if (Array.isArray(jsonData) && jsonData.length > 0 && typeof jsonData[0] === 'object') {
-            // Extract headers from first object
-            const headers = Object.keys(jsonData[0]);
-            
-            // Create CSV content
-            const csvRows = [headers.join(',')];
-            
-            jsonData.forEach(item => {
-              const values = headers.map(header => {
-                const val = item[header];
-                return typeof val === 'string' ? `"${val.replace(/"/g, '""')}"` : val;
-              });
-              csvRows.push(values.join(','));
-            });
-            
-            csvData = csvRows.join('\n');
-            setStatus("JSON file loaded and converted to CSV.");
-            showToolbox(csvData);
-          } else {
-            throw new Error("JSON structure not compatible with CSV conversion.");
-          }
-        } catch (error) {
-          setStatus(`Error processing JSON: ${error.message}`, true);
-        }
-      };
-      reader.onerror = () => setStatus("File read error.", true);
-      reader.readAsText(file);
-    }
-    
-    function readHtmlToCsv(file) {
-      const reader = new FileReader();
-      reader.onload = function(e) {
-        try {
-          const parser = new DOMParser();
-          const doc = parser.parseFromString(e.target.result, 'text/html');
-          const tables = doc.querySelectorAll('table');
-          
-          if (tables.length === 0) throw new Error("No tables found in HTML.");
-          
-          // Use the first table found
-          const table = tables[0];
-          const rows = table.querySelectorAll('tr');
-          const csvRows = [];
-          
-          rows.forEach(row => {
-            const cells = row.querySelectorAll('th, td');
-            const csvCells = [];
-            
-            cells.forEach(cell => {
-              const cellText = cell.textContent.trim();
-              csvCells.push(`"${cellText.replace(/"/g, '""')}"`);
-            });
-            
-            csvRows.push(csvCells.join(','));
-          });
-          
-          csvData = csvRows.join('\n');
-          setStatus("HTML table loaded and converted to CSV.");
-          showToolbox(csvData);
-        } catch (error) {
-          setStatus(`Error processing HTML: ${error.message}`, true);
-        }
-      };
-      reader.onerror = () => setStatus("File read error.", true);
-      reader.readAsText(file);
-    }
-    
-    function readXmlToCsv(file) {
-      const reader = new FileReader();
-      reader.onload = function(e) {
-        try {
-          const parser = new DOMParser();
-          const xmlDoc = parser.parseFromString(e.target.result, 'text/xml');
-          
-          // Find the first repeating element to use as rows
-          const rootElement = xmlDoc.documentElement;
-          const childElements = rootElement.children;
-          
-          if (childElements.length === 0) throw new Error("No elements found in XML.");
-          
-          // Get the tag name of the first child
-          const firstChildTag = childElements[0].tagName;
-          
-          // Find all elements with the same tag name
-          const rowElements = xmlDoc.getElementsByTagName(firstChildTag);
-          
-          if (rowElements.length === 0) throw new Error("No repeating elements found in XML.");
-          
-          // Get all unique attribute and child element names as headers
-          const headerSet = new Set();
-          Array.from(rowElements).forEach(el => {
-            // Add attributes
-            Array.from(el.attributes).forEach(attr => headerSet.add(attr.name));
-            
-            // Add child element names
-            Array.from(el.children).forEach(child => headerSet.add(child.tagName));
-          });
-          
-          const headers = Array.from(headerSet);
-          const csvRows = [headers.join(',')];
-          
-          // Process each row element
-          Array.from(rowElements).forEach(el => {
-            const values = headers.map(header => {
-              // Check if it's an attribute
-              if (el.hasAttribute(header)) {
-                const val = el.getAttribute(header);
-                return `"${val.replace(/"/g, '""')}"`;
-              } 
-              
-              // Check if it's a child element
-              const childElement = el.getElementsByTagName(header)[0];
-              if (childElement) {
-                const val = childElement.textContent;
-                return `"${val.replace(/"/g, '""')}"`;
-              }
-              
-              return '""'; // Empty value if not found
-            });
-            
-            csvRows.push(values.join(','));
-          });
-          
-          csvData = csvRows.join('\n');
-          setStatus("XML file loaded and converted to CSV.");
-          showToolbox(csvData);
-        } catch (error) {
-          setStatus(`Error processing XML: ${error.message}`, true);
-        }
-      };
-      reader.onerror = () => setStatus("File read error.", true);
-      reader.readAsText(file);
-    }
-    
-    // ===============================================
-    // UI Functions
-    // ===============================================
+    async function readSheetFileToCsv(file){try{const d=await convertSpreadsheetFile(file);csvData=serializeCSV(d.rows);showToolbox(csvData);setStatus('Spreadsheet converted.');}catch(error){setStatus('Error processing spreadsheet: '+error.message,true);}}
+    async function readJsonToCsv(file){try{const d=await convertJsonFile(file);csvData=serializeCSV(d.rows);showToolbox(csvData);setStatus('JSON converted.');}catch(error){setStatus('Error processing JSON: '+error.message,true);}}
+    async function readHtmlToCsv(file){try{const d=await convertHtmlFile(file);csvData=serializeCSV(d.rows);showToolbox(csvData);setStatus('HTML table data converted.');}catch(error){setStatus('Error processing HTML: '+error.message,true);}}
+    async function readXmlToCsv(file){try{const d=await convertXmlFile(file);csvData=serializeCSV(d.rows);showToolbox(csvData);setStatus('XML converted.');}catch(error){setStatus('Error processing XML: '+error.message,true);}}
+
     function showToolbox(data) {
       const toolboxInput = document.getElementById('toolbox-input');
       toolboxInput.value = data;
@@ -1130,389 +961,27 @@
     // ===============================================
     // CSV Processing Functions
     // ===============================================
-    function updatePreview() {
-      const toolboxInput = document.getElementById('toolbox-input');
-      csvData = toolboxInput.value;
-      
-      if (!csvData.trim()) {
-        setStatus("No data to preview.", true);
-        return;
-      }
-      
-      const preview = document.getElementById('preview');
-      const lines = csvData.split(/\r?\n/).filter(line => line.trim());
-      
-      if (lines.length < 1) {
-        setStatus("No data rows found.", true);
-        return;
-      }
-      
-      try {
-        const headerRow = parseCSVLine(lines[0]);
-        const columnCount = headerRow.length;
-        
-        let tableHtml = '<table><thead><tr>';
-        
-        // Create header row
-        headerRow.forEach(header => {
-          tableHtml += `<th>${escapeHtml(header)}</th>`;
-        });
-        tableHtml += '</tr></thead><tbody>';
-        
-        // Create data rows (up to 100 rows for performance)
-        const maxRows = Math.min(lines.length - 1, 100);
-        
-        for (let i = 1; i <= maxRows; i++) {
-          const cells = parseCSVLine(lines[i]);
-          tableHtml += '<tr>';
-          
-          for (let j = 0; j < columnCount; j++) {
-            tableHtml += `<td>${escapeHtml(cells[j] || '')}</td>`;
-          }
-          
-          tableHtml += '</tr>';
-        }
-        
-        tableHtml += '</tbody></table>';
-        preview.innerHTML = tableHtml;
-        
-        // Show column/row operations
-        document.getElementById('colrow-ops').style.display = 'block';
-        document.getElementById('colrow-ops').innerHTML = `
-          <div class="ops-title">Column/Row Operations:</div>
-          <div class="ops-buttons">
-            <button onclick="addColumn()">Add Column</button>
-            <button onclick="deleteColumn()">Delete Column</button>
-            <button onclick="addRow()">Add Row</button>
-            <button onclick="deleteRow()">Delete Row</button>
-            <button onclick="transposeData()" class="secondary">Transpose</button>
-          </div>
-        `;
-        
-        setStatus(`Preview updated. ${lines.length - 1} rows, ${columnCount} columns.`);
-      } catch (error) {
-        setStatus(`Error parsing CSV: ${error.message}`, true);
-      }
+    function updatePreview(){
+      const el=document.getElementById('toolbox-input');csvData=el?.value||'';if(!csvData.trim()){setStatus('No data to preview.',true);return;}
+      try{const rows=parseCSV(csvData);if(!rows.length)throw new Error('No data rows found.');const width=Math.max(...rows.map(r=>r.length));while(rows[0].length<width)rows[0].push('Column_'+(rows[0].length+1));
+        let html='<table><thead><tr>'+rows[0].map(h=>'<th>'+escapeHtml(String(h??''))+'</th>').join('')+'</tr></thead><tbody>';const limit=Math.min(rows.length-1,100);
+        for(let i=1;i<=limit;i++)html+='<tr>'+Array.from({length:width},(_,j)=>'<td>'+escapeHtml(String(rows[i]?.[j]??''))+'</td>').join('')+'</tr>';html+='</tbody></table>';if(rows.length-1>100)html+='<p><small>Preview shows first 100 of '+(rows.length-1)+' data rows.</small></p>';
+        document.getElementById('preview').innerHTML=html;const ops=document.getElementById('colrow-ops');ops.style.display='block';ops.innerHTML='<div class="ops-title">Column/Row Operations:</div><div class="ops-buttons"><button onclick="addColumn()">Add Column</button><button onclick="deleteColumn()">Delete Column</button><button onclick="addRow()">Add Row</button><button onclick="deleteRow()">Delete Row</button><button onclick="transposeData()" class="secondary">Transpose</button></div>';setStatus('Preview updated. '+(rows.length-1)+' rows, '+width+' columns.');
+      }catch(error){setStatus('Error parsing CSV: '+error.message,true);}
     }
-    
-    function parseCSVLine(line) {
-      const result = [];
-      let cell = '';
-      let inQuotes = false;
-      let i = 0;
-      
-      while (i < line.length) {
-        const char = line[i];
-        const nextChar = i < line.length - 1 ? line[i + 1] : '';
-        
-        if (char === '"' && !inQuotes) {
-          // Start of quoted field
-          inQuotes = true;
-        } else if (char === '"' && inQuotes) {
-          if (nextChar === '"') {
-            // Escaped quote within quotes
-            cell += '"';
-            i++; // Skip the next quote
-          } else {
-            // End of quoted field
-            inQuotes = false;
-          }
-        } else if (char === ',' && !inQuotes) {
-          // End of cell
-          result.push(cell);
-          cell = '';
-        } else {
-          cell += char;
-        }
-        
-        i++;
-      }
-      
-      // Add the last cell
-      result.push(cell);
-      
-      return result;
+    function parseCSVLine(line){return parseDelimitedText(String(line??''),',')[0]||[''];}
+    function reformatCSV(){try{syncEditorState();if(!csvData.trim())throw new Error('No data to reformat.');csvData=serializeCSV(parseCSV(csvData));document.getElementById('toolbox-input').value=csvData;updatePreview();setStatus('CSV normalized without dropping records or fields.');}catch(error){setStatus('Error reformatting CSV: '+error.message,true);}}
+    function adjustFormat(){
+      try{syncEditorState();const rows=parseCSV(csvData);if(rows.length<2)throw new Error('Not enough data rows.');const width=Math.max(...rows.map(r=>r.length)),header=rows[0],original=header.length;while(header.length<width)header.push('Column_'+(header.length+1));for(let i=1;i<rows.length;i++){while(rows[i].length<width)rows[i].push('');rows[i]=rows[i].map(v=>String(v??'').trim());}csvData=serializeCSV(rows);document.getElementById('toolbox-input').value=csvData;updatePreview();setStatus(width>original?'Format normalized without data loss. Added '+(width-original)+' generated header(s) for extra fields.':'CSV adjusted consistently without truncating data.');}
+      catch(error){setStatus('Error adjusting CSV format: '+error.message,true);}
     }
-    
-    function reformatCSV() {
-      if (!csvData.trim()) {
-        setStatus("No data to reformat.", true);
-        return;
-      }
-      
-      try {
-        const lines = csvData.split(/\r?\n/).filter(line => line.trim());
-        
-        if (lines.length < 1) {
-          setStatus("No data rows found.", true);
-          return;
-        }
-        
-        const reformattedRows = [];
-        
-        // Process each line
-        lines.forEach(line => {
-          const cells = parseCSVLine(line);
-          const formattedCells = cells.map(cell => {
-            // Quote all cells for consistency
-            return `"${cell.replace(/"/g, '""')}"`;
-          });
-          
-          reformattedRows.push(formattedCells.join(','));
-        });
-        
-        const reformattedCsv = reformattedRows.join('\n');
-        document.getElementById('toolbox-input').value = reformattedCsv;
-        csvData = reformattedCsv;
-        
-        updatePreview();
-        setStatus("CSV reformatted and cleaned.");
-      } catch (error) {
-        setStatus(`Error reformatting CSV: ${error.message}`, true);
-      }
-    }
-    
-    function adjustFormat() {
-      if (!csvData.trim()) {
-        setStatus("No data to adjust.", true);
-        return;
-      }
-      
-      try {
-        const lines = csvData.split(/\r?\n/).filter(line => line.trim());
-        
-        if (lines.length < 2) {
-          setStatus("Not enough data rows.", true);
-          return;
-        }
-        
-        // Parse header and determine column count
-        const header = parseCSVLine(lines[0]);
-        const columnCount = header.length;
-        
-        // Create adjusted rows
-        const adjustedRows = [header.map(h => `"${h.replace(/"/g, '""')}"`).join(',')];
-        
-        // Process data rows
-        for (let i = 1; i < lines.length; i++) {
-          const cells = parseCSVLine(lines[i]);
-          
-          // Ensure all rows have the same number of columns
-          while (cells.length < columnCount) cells.push('');
-          if (cells.length > columnCount) cells.length = columnCount;
-          
-          // Format cells
-          const formattedCells = cells.map(cell => {
-            // Clean and format each cell
-            return `"${cell.replace(/"/g, '""').trim()}"`;
-          });
-          
-          adjustedRows.push(formattedCells.join(','));
-        }
-        
-        const adjustedCsv = adjustedRows.join('\n');
-        document.getElementById('toolbox-input').value = adjustedCsv;
-        csvData = adjustedCsv;
-        
-        updatePreview();
-        setStatus("CSV adjusted to consistent format.");
-      } catch (error) {
-        setStatus(`Error adjusting CSV format: ${error.message}`, true);
-      }
-    }
-    
-    function downloadCSV() {
-      if (!csvData.trim()) {
-        setStatus("No data to download.", true);
-        return;
-      }
-      
-      const blob = new Blob([csvData], {type: 'text/csv'});
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'data.csv';
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => {
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-      }, 100);
-    }
-    
-    // Column/Row Operations
-    function addColumn() {
-      try {
-        const lines = csvData.split(/\r?\n/).filter(line => line.trim());
-        if (lines.length < 1) return;
-        
-        const newColumnName = prompt("Enter name for the new column:", "New Column");
-        if (newColumnName === null) return; // User cancelled
-        
-        const newRows = [];
-        
-        // Process each line
-        lines.forEach((line, index) => {
-          const cells = parseCSVLine(line);
-          
-          if (index === 0) {
-            // Add to header
-            cells.push(newColumnName);
-          } else {
-            // Add empty cell to data rows
-            cells.push('');
-          }
-          
-          // Format row
-          const formattedCells = cells.map(cell => `"${cell.replace(/"/g, '""')}"`);
-          newRows.push(formattedCells.join(','));
-        });
-        
-        csvData = newRows.join('\n');
-        document.getElementById('toolbox-input').value = csvData;
-        updatePreview();
-        setStatus("New column added.");
-      } catch (error) {
-        setStatus(`Error adding column: ${error.message}`, true);
-      }
-    }
-    
-    function deleteColumn() {
-      try {
-        const lines = csvData.split(/\r?\n/).filter(line => line.trim());
-        if (lines.length < 1) return;
-        
-        const headerRow = parseCSVLine(lines[0]);
-        if (headerRow.length < 2) {
-          setStatus("Cannot delete column. At least one column must remain.", true);
-          return;
-        }
-        
-        const columnOptions = headerRow.map((name, index) => `${index + 1}: ${name}`).join('\n');
-        const columnInput = prompt(`Enter column number to delete (1-${headerRow.length}):\n${columnOptions}`);
-        
-        if (columnInput === null) return; // User cancelled
-        
-        const columnIndex = parseInt(columnInput) - 1;
-        if (isNaN(columnIndex) || columnIndex < 0 || columnIndex >= headerRow.length) {
-          setStatus("Invalid column number.", true);
-          return;
-        }
-        
-        const newRows = [];
-        
-        // Process each line
-        lines.forEach(line => {
-          const cells = parseCSVLine(line);
-          cells.splice(columnIndex, 1);
-          
-          // Format row
-          const formattedCells = cells.map(cell => `"${cell.replace(/"/g, '""')}"`);
-          newRows.push(formattedCells.join(','));
-        });
-        
-        csvData = newRows.join('\n');
-        document.getElementById('toolbox-input').value = csvData;
-        updatePreview();
-        setStatus(`Column ${columnIndex + 1} deleted.`);
-      } catch (error) {
-        setStatus(`Error deleting column: ${error.message}`, true);
-      }
-    }
-    
-    function addRow() {
-      try {
-        const lines = csvData.split(/\r?\n/).filter(line => line.trim());
-        if (lines.length < 1) return;
-        
-        const headerRow = parseCSVLine(lines[0]);
-        const columnCount = headerRow.length;
-        
-        // Create empty cells for the new row
-        const newCells = Array(columnCount).fill('');
-        const formattedCells = newCells.map(cell => `"${cell}"`);
-        
-        // Insert the new row
-        lines.push(formattedCells.join(','));
-        
-        csvData = lines.join('\n');
-        document.getElementById('toolbox-input').value = csvData;
-        updatePreview();
-        setStatus("New row added.");
-      } catch (error) {
-        setStatus(`Error adding row: ${error.message}`, true);
-      }
-    }
-    
-    function deleteRow() {
-      try {
-        const lines = csvData.split(/\r?\n/).filter(line => line.trim());
-        if (lines.length < 2) {
-          setStatus("Cannot delete row. At least one data row must remain.", true);
-          return;
-        }
-        
-        const rowInput = prompt(`Enter row number to delete (2-${lines.length}):`);
-        if (rowInput === null) return; // User cancelled
-        
-        const rowIndex = parseInt(rowInput);
-        if (isNaN(rowIndex) || rowIndex < 2 || rowIndex > lines.length) {
-          setStatus("Invalid row number. First row (header) cannot be deleted.", true);
-          return;
-        }
-        
-        // Delete the row
-        lines.splice(rowIndex - 1, 1);
-        
-        csvData = lines.join('\n');
-        document.getElementById('toolbox-input').value = csvData;
-        updatePreview();
-        setStatus(`Row ${rowIndex} deleted.`);
-      } catch (error) {
-        setStatus(`Error deleting row: ${error.message}`, true);
-      }
-    }
-    
-    function transposeData() {
-      try {
-        const lines = csvData.split(/\r?\n/).filter(line => line.trim());
-        if (lines.length < 2) {
-          setStatus("Not enough data to transpose.", true);
-          return;
-        }
-        
-        // Parse all rows
-        const parsedRows = lines.map(line => parseCSVLine(line));
-        
-        // Determine the dimensions
-        const rowCount = parsedRows.length;
-        const colCount = Math.max(...parsedRows.map(row => row.length));
-        
-        // Create the transposed matrix
-        const transposed = [];
-        for (let j = 0; j < colCount; j++) {
-          const newRow = [];
-          for (let i = 0; i < rowCount; i++) {
-            newRow.push(parsedRows[i][j] || '');
-          }
-          transposed.push(newRow);
-        }
-        
-        // Format the new CSV
-        const formattedRows = transposed.map(row => 
-          row.map(cell => `"${(cell || '').replace(/"/g, '""')}"`).join(',')
-        );
-        
-        csvData = formattedRows.join('\n');
-        document.getElementById('toolbox-input').value = csvData;
-        updatePreview();
-        setStatus("Data transposed successfully.");
-      } catch (error) {
-        setStatus(`Error transposing data: ${error.message}`, true);
-      }
-    }
-    
-    // Utility Functions
+    function downloadCSV(){try{syncEditorState();if(!csvData.trim())throw new Error('No data to download.');downloadFile(new Blob([serializeCSV(parseCSV(csvData))],{type:'text/csv;charset=utf-8'}),'data.csv');setStatus('CSV download initiated.');}catch(error){setStatus('Download error: '+error.message,true);}}
+    function addColumn(){try{syncEditorState();const rows=parseCSV(csvData);if(!rows.length)throw new Error('No data loaded.');const name=prompt('Enter name for the new column:','New Column');if(name===null)return;rows[0].push(name);for(let i=1;i<rows.length;i++)rows[i].push('');commitRows(rows,'New column added.');}catch(error){setStatus('Error adding column: '+error.message,true);}}
+    function deleteColumn(){try{syncEditorState();const rows=parseCSV(csvData);if(!rows.length)throw new Error('No data loaded.');const h=rows[0];if(h.length<2)throw new Error('At least one column must remain.');const ans=prompt('Enter column number to delete (1-'+h.length+'):\n'+h.map((x,i)=>(i+1)+': '+x).join('\n'));if(ans===null)return;const idx=Number(ans)-1;if(!Number.isInteger(idx)||idx<0||idx>=h.length)throw new Error('Invalid column number.');rows.forEach(r=>{while(r.length<h.length)r.push('');r.splice(idx,1);});commitRows(rows,'Column '+(idx+1)+' deleted.');}catch(error){setStatus('Error deleting column: '+error.message,true);}}
+    function addRow(){try{syncEditorState();const rows=parseCSV(csvData);if(!rows.length)throw new Error('No data loaded.');rows.push(Array(rows[0].length).fill(''));commitRows(rows,'New row added.');}catch(error){setStatus('Error adding row: '+error.message,true);}}
+    function deleteRow(){try{syncEditorState();const rows=parseCSV(csvData);if(rows.length<=2)throw new Error('At least one data row must remain.');const ans=prompt('Enter row number to delete (2-'+rows.length+'):');if(ans===null)return;const n=Number(ans);if(!Number.isInteger(n)||n<2||n>rows.length)throw new Error('Invalid row number.');rows.splice(n-1,1);commitRows(rows,'Row '+n+' deleted.');}catch(error){setStatus('Error deleting row: '+error.message,true);}}
+    function transposeData(){try{syncEditorState();const rows=parseCSV(csvData);if(rows.length<2)throw new Error('Not enough data to transpose.');const w=Math.max(...rows.map(r=>r.length));rows.forEach(r=>{while(r.length<w)r.push('');});commitRows(Array.from({length:w},(_,c)=>rows.map(r=>r[c]??'')),'Data transposed successfully.');}catch(error){setStatus('Error transposing data: '+error.message,true);}}
+
     function escapeHtml(text) {
       const map = {
         '&': '&amp;',
@@ -2282,64 +1751,11 @@ ${new Date().toISOString().split('T')[0]}
       document.getElementById('train-percent').textContent = trainPercent;
       document.getElementById('val-percent').textContent = 100 - trainPercent;
     }
-    
-    function splitDataset() {
-      if (!csvData.trim()) {
-        setStatus("No data to split.", true);
-        return;
-      }
-      
-      try {
-        const lines = csvData.split(/\r?\n/).filter(line => line.trim());
-        
-        if (lines.length < 3) { // Need header + at least 2 rows
-          setStatus("Not enough data to split.", true);
-          return;
-        }
-        
-        const header = lines[0];
-        const dataRows = lines.slice(1);
-        
-        // Shuffle data rows
-        for (let i = dataRows.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [dataRows[i], dataRows[j]] = [dataRows[j], dataRows[i]];
-        }
-        
-        // Calculate split
-        const trainPercent = parseInt(document.getElementById('split-ratio').value);
-        const trainCount = Math.max(1, Math.floor(dataRows.length * trainPercent / 100));
-        
-        // Create training and validation sets
-        const trainRows = dataRows.slice(0, trainCount);
-        const valRows = dataRows.slice(trainCount);
-        
-        // Create CSV files
-        const trainCsv = [header, ...trainRows].join('\n');
-        const valCsv = [header, ...valRows].join('\n');
-        
-        // Create download section
-        const splitDownloads = document.getElementById('split-downloads');
-        splitDownloads.classList.remove('hide');
-        splitDownloads.innerHTML = `
-          <p>Dataset split successfully:</p>
-          <p>Training set: ${trainRows.length} rows (${trainPercent}%)</p>
-          <p>Validation set: ${valRows.length} rows (${100 - trainPercent}%)</p>
-          <div class="button-group">
-            <button onclick="downloadSplitFile('${encodeURIComponent(trainCsv)}', 'train.csv')" class="success">
-              Download Training Set
-            </button>
-            <button onclick="downloadSplitFile('${encodeURIComponent(valCsv)}', 'validation.csv')" class="success">
-              Download Validation Set
-            </button>
-          </div>
-        `;
-        
-        setStatus("Dataset split successfully.");
-      } catch (error) {
-        setStatus(`Error splitting dataset: ${error.message}`, true);
-      }
+    function splitDataset(){
+      try{syncEditorState();const rows=parseCSV(csvData);if(rows.length<3)throw new Error('Need a header and at least two data rows.');const header=rows[0],data=rows.slice(1),requested=parseInt(document.getElementById('split-ratio').value,10),seed=document.getElementById('split-seed')?.value||'MITO-Core',rand=seededRandom(seed);for(let i=data.length-1;i>0;i--){const j=Math.floor(rand()*(i+1));[data[i],data[j]]=[data[j],data[i]];}let count=Math.round(data.length*requested/100);count=Math.min(data.length-1,Math.max(1,count));const train=data.slice(0,count),val=data.slice(count),trainCsv=serializeCSV([header,...train]),valCsv=serializeCSV([header,...val]),ta=(train.length/data.length*100).toFixed(1),va=(val.length/data.length*100).toFixed(1),out=document.getElementById('split-downloads');out.classList.remove('hide');out.innerHTML='<p>Dataset split successfully with seed <code>'+escapeHtml(seed)+'</code>.</p><p>Training set: '+train.length+' rows ('+ta+'% actual; '+requested+'% requested)</p><p>Validation set: '+val.length+' rows ('+va+'% actual)</p><div class="button-group"><button id="download-train" class="success">Download Training Set</button><button id="download-validation" class="success">Download Validation Set</button></div>';document.getElementById('download-train').addEventListener('click',()=>downloadFile(new Blob([trainCsv],{type:'text/csv'}),'train.csv'));document.getElementById('download-validation').addEventListener('click',()=>downloadFile(new Blob([valCsv],{type:'text/csv'}),'validation.csv'));setStatus('Dataset split completed with reproducible shuffling.');}
+      catch(error){setStatus('Error splitting dataset: '+error.message,true);}
     }
+
     
     function downloadSplitFile(encodedData, filename) {
       const decodedData = decodeURIComponent(encodedData);
