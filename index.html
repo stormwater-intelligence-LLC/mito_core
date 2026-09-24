@@ -650,7 +650,7 @@
           </div>
           <div class="stormwater-table-container">
             <h2 style="color:#2563eb; text-align:center;">NOAA Precipitation Table (6-Hour Interval Example)</h2>
-            <table>
+            <table id="precip-table">
               <caption>6-Hourly Rainfall - Los Angeles Downtown USC Station (NOAA)</caption>
               <tr>
                 <th>Date</th>
@@ -698,8 +698,8 @@
               </tr>
             </table>
             <div class="button-group" style="margin-top:1em; justify-content:center;">
-              <button class="success">Import Precipitation Data</button>
-              <button class="secondary">Download as CSV</button>
+              <button id="precip-import" class="success">Import Precipitation Data</button>
+              <button id="precip-download" class="secondary">Download as CSV</button>
             </div>
           </div>
           
@@ -719,7 +719,7 @@
     <div class="card" id="noaa-section" style="display: none;">
       <h2 class="app-subtitle">Connect NOAA API Data with MITO Core</h2>
       <p style="text-align: center; margin-bottom: 20px;">
-        Add your NOAA API key in the API Keys tab to pull precipitation data directly into CSV format for stormwater reporting.
+        Configure NOAA or other API services in the API Keys tab. NOAA weather.gov requests do not require an API key in MITO Core.
       </p>
       <div class="button-group" style="justify-content: center;">
         <button onclick="document.querySelector('.tab[data-tab=\'apikeys\']').click();" class="h2o-export-btn">
@@ -786,7 +786,7 @@
     // ===============================================
     // Initialization and Event Handlers
     // ===============================================
-        function initMitoCore(){
+    function initMitoCore(){
       const dropzone=document.getElementById('dropzone'),fileInput=document.createElement('input');
       fileInput.type='file';fileInput.multiple=true;fileInput.accept='.csv,.tsv,.xlsx,.xls,.ods,.txt,.json,.xml,.html,.htm';fileInput.style.display='none';document.body.appendChild(fileInput);
       const on=(id,event,handler)=>{const el=document.getElementById(id);if(el)el.addEventListener(event,handler);};
@@ -796,10 +796,14 @@
       on('h2o-export','click',showH2OExportModal);on('confirm-h2o-export','click',exportForH2O);on('cancel-h2o-export','click',closeH2OExportModal);on('close-h2o-modal','click',closeH2OExportModal);
       on('toggle-dark-mode','click',toggleDarkMode);on('h2o-template','change',showTemplateDescription);on('apply-template','click',applyH2OTemplate);on('validate-h2o','click',validateH2OFormat);on('toggle-preview','click',toggleModelPreview);
       on('split-ratio','input',updateSplitPercentages);on('apply-split','click',splitDataset);on('import-persona','click',()=>document.getElementById('persona-file')?.click());on('persona-file','change',importPersonaData);
+      on('precip-import','click',importDisplayedPrecipitation);on('precip-download','click',downloadDisplayedPrecipitation);
       document.querySelectorAll('.tab').forEach(tab=>tab.addEventListener('click',()=>switchTab(tab.dataset.tab)));
-      if(darkMode)document.body.classList.add('dark-mode');initializeApiKeysUI();ensureSplitSeedControl();
+      if(darkMode)document.body.classList.add('dark-mode');
+      registerBuiltInServices();initializeApiKeysUI();ensureSplitSeedControl();
+      const location=document.getElementById('location');if(location&&!location.value)location.value='Los Angeles, CA';
+      const noaaSection=document.getElementById('noaa-section');if(noaaSection)noaaSection.style.display='block';
     }
-    document.addEventListener('DOMContentLoaded', initMitoCore);
+
 
 
     function syncEditorState(){const el=document.getElementById('toolbox-input');if(el)csvData=el.value||'';}
@@ -997,6 +1001,82 @@
       return (text || '').replace(/"/g, '""');
     }
     
+    let lastApiResult = null;
+    let lastApiFormat = null;
+
+    function normalizeHeader(v){return String(v??'').trim().toLowerCase().replace(/[\s\-]+/g,'_');}
+
+    function hasHeaders(headers,wanted){const set=new Set(headers.map(normalizeHeader));return wanted.every(h=>set.has(normalizeHeader(h)));}
+
+    function findHeader(headers,candidates){const n=headers.map(normalizeHeader);for(const c of candidates){const i=n.indexOf(normalizeHeader(c));if(i>=0)return i;}return-1;}
+
+    function chooseColumn(headers,role,candidates){
+      const exact=findHeader(headers,candidates);if(exact>=0)return exact;
+      if(headers.length===2&&(role==='instruction'||role==='response'||role==='text'||role==='label'))return(role==='instruction'||role==='text')?0:1;
+      const ans=prompt('Select the column for '+role+':\n'+headers.map((h,i)=>(i+1)+': '+h).join('\n'));
+      if(ans===null)throw new Error('Column selection cancelled');
+      const idx=Number(ans)-1;if(!Number.isInteger(idx)||idx<0||idx>=headers.length)throw new Error('Invalid '+role+' column selection');
+      return idx;
+    }
+
+    function generateReadmeForExport(format,opts){
+      const files=['- '+opts.dataName+': validated dataset'];
+      if(opts.includeConfig)files.push('- '+opts.configName+': suggested fine-tuning parameters');
+      if(opts.includeReadme)files.push('- '+opts.readmeName+': this documentation');
+      const usage=opts.includeConfig?'h2o finetune --data '+opts.dataName+' --config '+opts.configName:'Use '+opts.dataName+' with the H2O fine-tuning workflow and configure training parameters in H2O.';
+      return 'H2O.ai Fine-Tuning Dataset - '+format+'\n\nFiles:\n'+files.join('\n')+'\n\n'+getFormatDescription(format)+'\n\nUsage:\n'+usage+'\n\nGenerated by MITO Core on '+new Date().toISOString()+'\n';
+    }
+
+    function registerBuiltInServices(){
+      apiRegistry.services.noaa={
+        name:'NOAA / National Weather Service',key:'',baseUrl:'https://api.weather.gov',authType:'none',
+        operations:{
+          get_forecast:{name:'Get Weather Forecast by Coordinates',endpoint:'/points/{latitude},{longitude}',method:'GET',
+            params:[{id:'latitude',name:'Latitude',type:'text',required:true},{id:'longitude',name:'Longitude',type:'text',required:true}],
+            outputFormat:'json',followForecast:true}
+        }
+      };
+    }
+
+    function addCustomOperation(){
+      const serviceId=document.getElementById('api-service')?.value;
+      if(!serviceId||!apiRegistry.services[serviceId]){setStatus('Select a service before adding an operation.',true);return;}
+      const name=(prompt('Operation name:','New Operation')||'').trim();if(!name)return;
+      const id=name.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'')||('operation_'+Date.now());
+      const endpoint=(prompt('Endpoint path (example: /v1/items/{id}):','/')||'').trim();
+      const method=(prompt('HTTP method: GET, POST, PUT, PATCH, or DELETE','GET')||'GET').trim().toUpperCase();
+      if(!['GET','POST','PUT','PATCH','DELETE'].includes(method)){setStatus('Unsupported HTTP method.',true);return;}
+      const outputFormat=(prompt('Output format: json, csv, or text','json')||'json').trim().toLowerCase();
+      const paramText=(prompt('Parameters as comma-separated names. Use {name} in the endpoint for path parameters.','')||'').trim();
+      const params=paramText?paramText.split(',').map(p=>p.trim()).filter(Boolean).map(id=>({id,name:id,type:'text',required:true})):[];
+      apiRegistry.services[serviceId].operations[id]={name,endpoint,method,params,outputFormat};
+      saveApiServices();loadApiOperations();document.getElementById('api-operation').value=id;buildApiParamsForm();
+      setStatus('Operation "'+name+'" added and ready to execute.');
+    }
+
+    function looksDelimited(text){return /[\t,;|]/.test(String(text||'').split(/\r?\n/,1)[0]||'');}
+
+    function rowsToHtmlTable(rows){
+      if(!rows.length)return'<p>No rows.</p>';
+      let html='<table><thead><tr>'+rows[0].map(h=>'<th>'+escapeHtml(String(h??''))+'</th>').join('')+'</tr></thead><tbody>';
+      for(const r of rows.slice(1))html+='<tr>'+r.map(v=>'<td>'+escapeHtml(String(v??''))+'</td>').join('')+'</tr>';
+      return html+'</tbody></table>';
+    }
+
+    function tableElementToRows(table){return[...table.querySelectorAll('tr')].map(tr=>[...tr.querySelectorAll('th,td')].map(td=>td.textContent.trim())).filter(r=>r.length);}
+
+    function importDisplayedPrecipitation(){
+      const table=document.getElementById('precip-table');if(!table){setStatus('Precipitation table not found.',true);return;}
+      const rows=tableElementToRows(table);if(!rows.length){setStatus('Precipitation table is empty.',true);return;}
+      csvData=serializeCSV(rows);document.getElementById('toolbox-input').value=csvData;switchTab('editor');updatePreview();setStatus('Displayed precipitation table imported into the editor.');
+    }
+
+    function downloadDisplayedPrecipitation(){
+      const table=document.getElementById('precip-table');if(!table){setStatus('Precipitation table not found.',true);return;}
+      const rows=tableElementToRows(table);if(!rows.length){setStatus('Precipitation table is empty.',true);return;}
+      downloadFile(new Blob([serializeCSV(rows)],{type:'text/csv;charset=utf-8'}),'noaa_precipitation_display.csv');setStatus('Displayed precipitation CSV download initiated.');
+    }
+
     // ===============================================
     // H2O.ai Integration
     // ===============================================
@@ -1095,49 +1175,15 @@
         setStatus(`Error applying template: ${error.message}`, true);
       }
     }
-    
-    function validateH2OFormat() {
-      const template = document.getElementById('h2o-template').value;
-      
-      if (!template) {
-        setStatus("Please select a template to validate against.", true);
-        return;
-      }
-      
-      if (!csvData.trim()) {
-        setStatus("No data to validate.", true);
-        return;
-      }
-      
-      try {
-        const result = detectAndValidateH2OFormat(csvData);
-        const validationResults = document.getElementById('validation-results');
-        
-        if (result.format === template) {
-          validationResults.innerHTML = `
-            <div class="validation-pass">✓ Data matches the ${template} format.</div>
-          `;
-          setStatus("Validation successful.");
-        } else if (result.format === 'unknown') {
-          validationResults.innerHTML = `
-            <div class="validation-fail">✗ Data does not match any H2O.ai format.</div>
-            <p>Issues found:</p>
-            <ul>
-              ${result.issues.map(issue => `<li>${issue}</li>`).join('')}
-            </ul>
-          `;
-          setStatus("Validation failed. See details below.", true);
-        } else {
-          validationResults.innerHTML = `
-            <div class="validation-fail">✗ Data matches ${result.format} format, not ${template} format.</div>
-            <p>To convert to ${template} format, use the "Apply Template" button.</p>
-          `;
-          setStatus("Data is in a different H2O.ai format.", true);
-        }
-      } catch (error) {
-        setStatus(`Error validating format: ${error.message}`, true);
-      }
+    function validateH2OFormat(){
+      const template=document.getElementById('h2o-template')?.value;if(!template){setStatus('Please select a template to validate against.',true);return;}if(!csvData.trim()){setStatus('No data to validate.',true);return;}
+      try{const result=detectAndValidateH2OFormat(csvData),el=document.getElementById('validation-results');
+        if(result.format!==template){el.innerHTML='<div class="validation-fail">✗ Format mismatch.</div><ul>'+result.issues.map(i=>'<li>'+escapeHtml(i)+'</li>').join('')+'</ul>';setStatus('Validation failed: format mismatch.',true);return;}
+        if(result.issues.length){el.innerHTML='<div class="validation-fail">✗ Format detected, but validation found '+result.issues.length+' issue(s).</div><ul>'+result.issues.map(i=>'<li>'+escapeHtml(i)+'</li>').join('')+'</ul>';setStatus('Validation failed. Fix the listed data issues before export.',true);return;}
+        el.innerHTML='<div class="validation-pass">✓ Data matches and validates as '+escapeHtml(template)+' format.</div>';setStatus('Validation successful.');
+      }catch(error){setStatus('Error validating format: '+error.message,true);}
     }
+
     
     function toggleModelPreview() {
       const previewContainer = document.getElementById('model-preview-container');
@@ -1225,296 +1271,58 @@
         toggleButton.textContent = 'Generate Model Preview';
       }
     }
-    
-    function formatAsInstructionTuning(csvData) {
-      const lines = csvData.split(/\r?\n/).filter(l => l.trim());
-      if (lines.length < 2) {
-        throw new Error('Not enough data to format');
-      }
-      
-      // Check if already in correct format
-      const headers = parseCSVLine(lines[0]);
-      if (headers.includes('instruction') && headers.includes('response')) {
-        return csvData; // Already in correct format
-      }
-      
-      // If we have exactly two columns, assume they are instruction/response
-      if (headers.length === 2) {
-        const newCsv = ['instruction,response'];
-        
-        // Skip header, process data rows
-        for (let i = 1; i < lines.length; i++) {
-          const cells = parseCSVLine(lines[i]);
-          if (cells.length >= 2) {
-            newCsv.push(`"${escapeCSV(cells[0])}","${escapeCSV(cells[1])}"`);
-          }
-        }
-        
-        return newCsv.join('\n');
-      }
-      
-      // More complex case: Let user select columns
-      // For simplicity, just use first two columns
-      const newCsv = ['instruction,response'];
-      
-      for (let i = 1; i < lines.length; i++) {
-        const cells = parseCSVLine(lines[i]);
-        if (cells.length >= 2) {
-          newCsv.push(`"${escapeCSV(cells[0])}","${escapeCSV(cells[1])}"`);
-        }
-      }
-      
-      return newCsv.join('\n');
+    function formatAsInstructionTuning(data){
+      const rows=parseCSV(data);if(rows.length<2)throw new Error('Not enough data to format');const h=rows[0];
+      if(hasHeaders(h,['instruction','response']))return serializeCSV(rows);
+      const a=chooseColumn(h,'instruction',['instruction','prompt','question','input']),b=chooseColumn(h,'response',['response','answer','output','assistant']);
+      return serializeCSV([['instruction','response'],...rows.slice(1).map(r=>[r[a]??'',r[b]??''])]);
     }
-    
-    function formatAsClassification(csvData) {
-      const lines = csvData.split(/\r?\n/).filter(l => l.trim());
-      if (lines.length < 2) {
-        throw new Error('Not enough data to format');
-      }
-      
-      // Check if already in correct format
-      const headers = parseCSVLine(lines[0]);
-      if (headers.includes('text') && headers.includes('label')) {
-        return csvData; // Already in correct format
-      }
-      
-      // Convert to classification format
-      const newCsv = ['text,label'];
-      
-      // Skip header, process data rows
-      for (let i = 1; i < lines.length; i++) {
-        const cells = parseCSVLine(lines[i]);
-        if (cells.length >= 2) {
-          newCsv.push(`"${escapeCSV(cells[0])}","${escapeCSV(cells[1])}"`);
-        }
-      }
-      
-      return newCsv.join('\n');
+    function formatAsClassification(data){
+      const rows=parseCSV(data);if(rows.length<2)throw new Error('Not enough data to format');const h=rows[0];
+      if(hasHeaders(h,['text','label']))return serializeCSV(rows);
+      const a=chooseColumn(h,'text',['text','content','input','sentence','description']),b=chooseColumn(h,'label',['label','class','category','target','status']);
+      return serializeCSV([['text','label'],...rows.slice(1).map(r=>[r[a]??'',r[b]??''])]);
     }
-    
-    function formatAsChat(csvData) {
-      const lines = csvData.split(/\r?\n/).filter(l => l.trim());
-      if (lines.length < 2) {
-        throw new Error('Not enough data to format');
-      }
-      
-      // For chat format, we need to check structure and convert
-      const headers = parseCSVLine(lines[0]);
-      
-      // If already in messages format, return as is
-      if (headers.includes('messages')) {
-        return csvData;
-      }
-      
-      // If we have user/assistant columns, convert to chat format
-      const userColIndex = headers.findIndex(h => 
-        h.toLowerCase().includes('user') || 
-        h.toLowerCase().includes('input') || 
-        h.toLowerCase().includes('question'));
-      
-      const assistantColIndex = headers.findIndex(h => 
-        h.toLowerCase().includes('assistant') || 
-        h.toLowerCase().includes('output') || 
-        h.toLowerCase().includes('response') || 
-        h.toLowerCase().includes('answer'));
-      
-      if (userColIndex !== -1 && assistantColIndex !== -1) {
-        const newCsv = ['messages'];
-        
-        // Skip header, process data rows
-        for (let i = 1; i < lines.length; i++) {
-          const cells = parseCSVLine(lines[i]);
-          if (cells.length > Math.max(userColIndex, assistantColIndex)) {
-            const userMessage = cells[userColIndex];
-            const assistantMessage = cells[assistantColIndex];
-            
-            const messages = JSON.stringify([
-              {"role": "user", "content": userMessage},
-              {"role": "assistant", "content": assistantMessage}
-            ]);
-            
-            newCsv.push(`"${escapeCSV(messages)}"`);
-          }
-        }
-        
-        return newCsv.join('\n');
-      }
-      
-      throw new Error('Cannot convert to chat format: missing user or assistant columns');
+    function formatAsChat(data){
+      const rows=parseCSV(data);if(rows.length<2)throw new Error('Not enough data to format');const h=rows[0];
+      if(h.map(normalizeHeader).includes('messages'))return serializeCSV(rows);
+      const a=chooseColumn(h,'user message',['user_message','question','input','prompt','user']),b=chooseColumn(h,'assistant message',['assistant_message','answer','response','output','assistant']);
+      return serializeCSV([['messages'],...rows.slice(1).map(r=>[JSON.stringify([{role:'user',content:String(r[a]??'')},{role:'assistant',content:String(r[b]??'')}])])]);
     }
-    
-    function formatAsPersona(csvData) {
-      const lines = csvData.split(/\r?\n/).filter(l => l.trim());
-      if (lines.length < 2) {
-        throw new Error('Not enough data to format');
-      }
-      
-      // Check if already in correct format
-      const headers = parseCSVLine(lines[0]);
-      if (headers.includes('instruction') && headers.includes('response') && headers.includes('persona')) {
-        return csvData; // Already in correct format
-      }
-      
-      // If we have instruction and response columns but no persona
-      if (headers.includes('instruction') && headers.includes('response') && !headers.includes('persona')) {
-        const instructionIdx = headers.indexOf('instruction');
-        const responseIdx = headers.indexOf('response');
-        
-        // Ask user for default persona
-        const defaultPersona = prompt("Enter a default persona to use for all examples:", "Helpful assistant");
-        if (defaultPersona === null) throw new Error("Operation cancelled");
-        
-        const newCsv = ['instruction,response,persona'];
-        
-        // Skip header, process data rows
-        for (let i = 1; i < lines.length; i++) {
-          const cells = parseCSVLine(lines[i]);
-          if (cells.length > Math.max(instructionIdx, responseIdx)) {
-            const instruction = cells[instructionIdx];
-            const response = cells[responseIdx];
-            
-            newCsv.push(`"${escapeCSV(instruction)}","${escapeCSV(response)}","${escapeCSV(defaultPersona)}"`);
-          }
-        }
-        
-        return newCsv.join('\n');
-      }
-      
-      // For simplicity in other cases, assume first two columns are instruction/response
-      // and add a default persona
-      const defaultPersona = prompt("Enter a default persona to use for all examples:", "Helpful assistant");
-      if (defaultPersona === null) throw new Error("Operation cancelled");
-      
-      const newCsv = ['instruction,response,persona'];
-      
-      // Skip header, process data rows
-      for (let i = 1; i < lines.length; i++) {
-        const cells = parseCSVLine(lines[i]);
-        if (cells.length >= 2) {
-          newCsv.push(`"${escapeCSV(cells[0])}","${escapeCSV(cells[1])}","${escapeCSV(defaultPersona)}"`);
-        }
-      }
-      
-      return newCsv.join('\n');
+    function formatAsPersona(data){
+      const rows=parseCSV(data);if(rows.length<2)throw new Error('Not enough data to format');const h=rows[0];
+      if(hasHeaders(h,['instruction','response','persona']))return serializeCSV(rows);
+      const a=chooseColumn(h,'instruction',['instruction','prompt','question','input']),b=chooseColumn(h,'response',['response','answer','output','assistant']);
+      const p=findHeader(h,['persona','role','system','character']);let fallback='';
+      if(p<0){fallback=prompt('Enter a default persona to use for examples without a persona column:','Helpful assistant');if(fallback===null)throw new Error('Operation cancelled');}
+      return serializeCSV([['instruction','response','persona'],...rows.slice(1).map(r=>[r[a]??'',r[b]??'',p>=0?(r[p]??''):fallback])]);
     }
-    
-    function exportForH2O() {
-      const selectedH2OFormat = document.getElementById('h2o-format').value;
-      const includeConfig = document.getElementById('include-config').checked;
-      const includeReadme = document.getElementById('include-readme').checked;
-      
-      if (!csvData.trim()) {
-        setStatus("No data to export.", true);
-        return;
-      }
-      
-      // Apply the selected format
-      let optimizedCSV;
-      try {
-        switch (selectedH2OFormat) {
-          case 'instruction':
-            optimizedCSV = formatAsInstructionTuning(csvData);
-            break;
-          case 'classification':
-            optimizedCSV = formatAsClassification(csvData);
-            break;
-          case 'chat':
-            optimizedCSV = formatAsChat(csvData);
-            break;
-          case 'persona':
-            optimizedCSV = formatAsPersona(csvData);
-            break;
-        }
-      } catch (error) {
-        setStatus(`Error formatting for H2O.ai: ${error.message}`, true);
-        closeH2OExportModal();
-        return;
-      }
-      
-      // Create CSV file blob
-      const csvBlob = new Blob([optimizedCSV], {type: 'text/csv'});
-      downloadFile(csvBlob, `h2o_${selectedH2OFormat}_data.csv`);
-      
-      // Create config file if requested
-      if (includeConfig) {
-        const config = {
-          format_type: selectedH2OFormat,
-          fine_tuning: {
-            epochs: getRecommendedEpochs(optimizedCSV, selectedH2OFormat),
-            learning_rate: 2e-5,
-            batch_size: 4
-          },
-          metadata: {
-            examples: optimizedCSV.split('\n').length - 1,
-            exported_date: new Date().toISOString(),
-            tool: "MITO Core - Universal CSV Converter"
-          },
-          usage: {
-            cli_command: `h2o finetune --data h2o_${selectedH2OFormat}_data.csv --config h2o_${selectedH2OFormat}_config.json`,
-            notes: "Adjust the parameters in the config file based on your specific requirements"
-          }
-        };
-        
-        const configBlob = new Blob([JSON.stringify(config, null, 2)], {type: 'application/json'});
-        downloadFile(configBlob, `h2o_${selectedH2OFormat}_config.json`);
-      }
-      
-      // Create README if requested
-      if (includeReadme) {
-        const readme = generateReadme(selectedH2OFormat);
-        const readmeBlob = new Blob([readme], {type: 'text/plain'});
-        downloadFile(readmeBlob, `h2o_${selectedH2OFormat}_README.txt`);
-      }
-      
-      // Close modal and show success message
-      closeH2OExportModal();
-      setStatus(`Exported data for H2O.ai ${selectedH2OFormat} fine-tuning.`);
+    function exportForH2O(){
+      try{syncEditorState();const format=document.getElementById('h2o-format').value,includeConfig=document.getElementById('include-config').checked,includeReadme=document.getElementById('include-readme').checked;if(!csvData.trim())throw new Error('No data to export.');
+        let optimized;if(format==='instruction')optimized=formatAsInstructionTuning(csvData);else if(format==='classification')optimized=formatAsClassification(csvData);else if(format==='chat')optimized=formatAsChat(csvData);else if(format==='persona')optimized=formatAsPersona(csvData);else throw new Error('Unsupported H2O format.');
+        const check=detectAndValidateH2OFormat(optimized);if(check.format!==format||check.issues.length)throw new Error('Export blocked by validation: '+(check.issues.join('; ')||'format mismatch'));
+        const dataName='h2o_'+format+'_data.csv',configName='h2o_'+format+'_config.json',readmeName='h2o_'+format+'_README.txt';downloadFile(new Blob([optimized],{type:'text/csv;charset=utf-8'}),dataName);
+        if(includeConfig){const config={format_type:format,fine_tuning:{epochs:getRecommendedEpochs(optimized,format),learning_rate:2e-5,batch_size:4},metadata:{examples:parseCSV(optimized).length-1,exported_date:new Date().toISOString(),tool:'MITO Core'},usage:{data_file:dataName,config_file:configName}};downloadFile(new Blob([JSON.stringify(config,null,2)],{type:'application/json'}),configName);}
+        if(includeReadme)downloadFile(new Blob([generateReadmeForExport(format,{includeConfig,includeReadme,dataName,configName,readmeName})],{type:'text/plain;charset=utf-8'}),readmeName);
+        closeH2OExportModal();setStatus('Validated H2O '+format+' export initiated.');
+      }catch(error){setStatus('H2O export error: '+error.message,true);}
     }
-    
-    function detectAndValidateH2OFormat(csvData) {
-      const lines = csvData.split(/\r?\n/).filter(l => l.trim());
-      if (lines.length < 2) {
-        return { format: 'unknown', issues: ['Not enough data rows'] };
-      }
-      
-      const headers = parseCSVLine(lines[0]);
-      let format = 'unknown';
-      
-      // Detect format type
-      if (headers.includes('instruction') && headers.includes('response')) {
-        format = headers.includes('persona') ? 'persona' : 'instruction';
-      } else if (headers.includes('text') && headers.includes('label')) {
-        format = 'classification';
-      } else if (headers.includes('messages')) {
-        format = 'chat';
-      }
-      
-      // If unknown format, gather issues
-      const issues = [];
-      if (format === 'unknown') {
-        issues.push('Header row does not match any H2O.ai format');
-        issues.push('Expected headers like "instruction,response" or "text,label" or "messages"');
-      } else {
-        // Validate based on format
-        switch (format) {
-          case 'instruction':
-            validateInstructionFormat(lines, headers, issues);
-            break;
-          case 'classification':
-            validateClassificationFormat(lines, headers, issues);
-            break;
-          case 'chat':
-            validateChatFormat(lines, headers, issues);
-            break;
-          case 'persona':
-            validatePersonaFormat(lines, headers, issues);
-            break;
-        }
-      }
-      
-      return { format, issues };
+
+    function detectAndValidateH2OFormat(data){
+      const rows=parseCSV(data);if(rows.length<2)return{format:'unknown',issues:['Not enough data rows']};
+      const headers=rows[0].map(normalizeHeader);let format='unknown';
+      if(headers.includes('instruction')&&headers.includes('response'))format=headers.includes('persona')?'persona':'instruction';
+      else if(headers.includes('text')&&headers.includes('label'))format='classification';
+      else if(headers.includes('messages'))format='chat';
+      const issues=[];if(format==='unknown'){issues.push('Header row does not match instruction, classification, chat, or persona format.');return{format,issues};}
+      const lines=rows.map(r=>serializeCSV([r]));
+      if(format==='instruction')validateInstructionFormat(lines,headers,issues);
+      else if(format==='classification')validateClassificationFormat(lines,headers,issues);
+      else if(format==='chat')validateChatFormat(lines,headers,issues);
+      else validatePersonaFormat(lines,headers,issues);
+      return{format,issues};
     }
+
     
     function validateInstructionFormat(lines, headers, issues) {
       const instrIdx = headers.indexOf('instruction');
@@ -1766,48 +1574,12 @@ ${new Date().toISOString().split('T')[0]}
     // ===============================================
     // Persona Integration Functions
     // ===============================================
-    function importPersonaData(e) {
-      const file = e.target.files[0];
-      if (!file) return;
-      
-      const reader = new FileReader();
-      reader.onload = function(event) {
-        try {
-          const personaData = JSON.parse(event.target.result);
-          
-          if (!personaData || !personaData.examples || !Array.isArray(personaData.examples)) {
-            throw new Error("Invalid persona data format.");
-          }
-          
-          // Convert persona data to CSV
-          const csvRows = ['instruction,response,persona'];
-          const persona = personaData.description || "AI Assistant";
-          
-          personaData.examples.forEach(example => {
-            if (example.user && example.assistant) {
-              csvRows.push(`"${escapeCSV(example.user)}","${escapeCSV(example.assistant)}","${escapeCSV(persona)}"`);
-            }
-          });
-          
-          // Update preview
-          document.getElementById('persona-preview').classList.remove('hide');
-          document.getElementById('persona-preview').innerHTML = `
-            <p><strong>Persona:</strong> ${escapeHtml(persona)}</p>
-            <p><strong>Examples:</strong> ${personaData.examples.length} conversations</p>
-            <p>Click "Apply to Editor" to convert this data to CSV format.</p>
-            <button onclick="applyPersonaToEditor('${encodeURIComponent(csvRows.join('\n'))}')" class="success">
-              Apply to Editor
-            </button>
-          `;
-          
-          setStatus("Persona data imported successfully.");
-        } catch (error) {
-          setStatus(`Error importing persona data: ${error.message}`, true);
-        }
-      };
-      reader.onerror = () => setStatus("File read error.", true);
-      reader.readAsText(file);
+    function importPersonaData(e){
+      const file=e.target.files?.[0];if(!file)return;const reader=new FileReader();
+      reader.onload=event=>{try{const data=JSON.parse(event.target.result);if(!data||!Array.isArray(data.examples))throw new Error('Invalid persona data format.');const persona=data.description||'AI Assistant',valid=data.examples.filter(x=>x&&typeof x.user==='string'&&typeof x.assistant==='string'&&x.user.trim()&&x.assistant.trim());if(!valid.length)throw new Error('No valid user/assistant examples found.');const encoded=encodeURIComponent(serializeCSV([['instruction','response','persona'],...valid.map(x=>[x.user,x.assistant,persona])])),preview=document.getElementById('persona-preview');preview.classList.remove('hide');preview.innerHTML='<p><strong>Persona:</strong> '+escapeHtml(persona)+'</p><p><strong>Converted examples:</strong> '+valid.length+' of '+data.examples.length+'</p><button id="apply-persona-editor" class="success">Apply to Editor</button>';document.getElementById('apply-persona-editor').addEventListener('click',()=>applyPersonaToEditor(encoded));setStatus('Persona data imported: '+valid.length+' valid examples.');}catch(error){setStatus('Error importing persona data: '+error.message,true);}};
+      reader.onerror=()=>setStatus('File read error.',true);reader.readAsText(file);
     }
+
     
     function applyPersonaToEditor(encodedData) {
       const decodedData = decodeURIComponent(encodedData);
@@ -1823,18 +1595,11 @@ ${new Date().toISOString().split('T')[0]}
     // ===============================================
     // API Key Management Functions
     // ===============================================
-    function initializeApiKeysUI() {
-      // Load saved services
-      loadApiServices();
-      
-      // Add event listeners
-      document.getElementById('add-service-btn').addEventListener('click', addApiService);
-      document.getElementById('api-service').addEventListener('change', loadApiOperations);
-      document.getElementById('api-operation').addEventListener('change', buildApiParamsForm);
-      document.getElementById('execute-api').addEventListener('click', executeApiOperation);
-      document.getElementById('import-results').addEventListener('click', importApiResultsToEditor);
-      document.getElementById('clear-results').addEventListener('click', clearApiResults);
+    function initializeApiKeysUI(){
+      loadApiServices();const on=(id,event,handler)=>document.getElementById(id)?.addEventListener(event,handler);
+      on('add-service-btn','click',addApiService);on('api-service','change',loadApiOperations);on('api-operation','change',buildApiParamsForm);on('execute-api','click',executeApiOperation);on('import-results','click',importApiResultsToEditor);on('clear-results','click',clearApiResults);on('add-custom-op','click',addCustomOperation);
     }
+
     
     function loadApiServices() {
       // Load from localStorage
@@ -1918,47 +1683,13 @@ ${new Date().toISOString().split('T')[0]}
         serviceSelect.appendChild(option);
       }
     }
-    
-    function addApiService() {
-      const serviceName = document.getElementById('new-service-name').value.trim();
-      const serviceKey = document.getElementById('new-service-key').value.trim();
-      
-      if (!serviceName) {
-        setStatus("Please enter a service name.", true);
-        return;
-      }
-      
-      // Create service ID from name
-      const serviceId = serviceName.toLowerCase().replace(/[^a-z0-9]/g, '_');
-      
-      // Check if service already exists
-      if (apiRegistry.services[serviceId]) {
-        setStatus(`Service "${serviceName}" already exists.`, true);
-        return;
-      }
-      
-      // Add to registry
-      apiRegistry.services[serviceId] = {
-        name: serviceName,
-        key: serviceKey,
-        baseUrl: '',
-        authType: 'apikey',
-        operations: {}
-      };
-      
-      // Save to localStorage
-      saveApiServices();
-      
-      // Update UI
-      updateServiceList();
-      updateServiceDropdown();
-      
-      // Clear form
-      document.getElementById('new-service-name').value = '';
-      document.getElementById('new-service-key').value = '';
-      
-      setStatus(`Service "${serviceName}" added successfully.`);
+    function addApiService(){
+      const name=document.getElementById('new-service-name').value.trim(),key=document.getElementById('new-service-key').value.trim();if(!name){setStatus('Please enter a service name.',true);return;}
+      const id=name.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');if(!id){setStatus('Service name must contain letters or numbers.',true);return;}if(apiRegistry.services[id]){setStatus('Service "'+name+'" already exists.',true);return;}
+      const baseUrl=(prompt('Base URL for this API:','')||'').trim(),auth=(prompt('Authentication type: none, bearer, x-api-key, or basic',key?'bearer':'none')||'none').trim().toLowerCase();
+      apiRegistry.services[id]={name,key,baseUrl,authType:auth,operations:{}};saveApiServices();updateServiceList();updateServiceDropdown();document.getElementById('new-service-name').value='';document.getElementById('new-service-key').value='';document.getElementById('api-service').value=id;loadApiOperations();setStatus('Service "'+name+'" added. Add an operation to make it executable.');
     }
+
     
     function deleteApiService(serviceId) {
       if (!confirm(`Are you sure you want to delete the "${apiRegistry.services[serviceId].name || serviceId}" service?`)) {
@@ -1977,28 +1708,11 @@ ${new Date().toISOString().split('T')[0]}
       
       setStatus(`Service deleted successfully.`);
     }
-    
-    function saveApiServices() {
-      try {
-        const servicesArray = [];
-        
-        for (const serviceId in apiRegistry.services) {
-          const service = apiRegistry.services[serviceId];
-          servicesArray.push({
-            id: serviceId,
-            name: service.name,
-            key: service.key,
-            baseUrl: service.baseUrl,
-            authType: service.authType,
-            operations: service.operations
-          });
-        }
-        
-        localStorage.setItem('mito_api_services', JSON.stringify(servicesArray));
-      } catch (error) {
-        console.error("Error saving services:", error);
-      }
+    function saveApiServices(){
+      try{const services=Object.entries(apiRegistry.services).filter(([id])=>id!=='noaa').map(([id,x])=>({id,name:x.name,key:x.key,baseUrl:x.baseUrl,authType:x.authType,operations:x.operations}));localStorage.setItem('mito_api_services',JSON.stringify(services));}
+      catch(error){console.error('Error saving services:',error);}
     }
+
     
     function loadApiOperations() {
       const serviceId = document.getElementById('api-service').value;
@@ -2177,158 +1891,28 @@ ${new Date().toISOString().split('T')[0]}
       // Execute API call
       executeApiCall(service, operation, params);
     }
-    
-    function executeApiCall(service, operation, params) {
-      setStatus("Executing API call...");
-      
-      // Build URL
-      let url = service.baseUrl || '';
-      let endpoint = operation.endpoint || '';
-      
-      // Replace path parameters in URL
-      for (const paramId in params) {
-        const paramValue = params[paramId];
-        endpoint = endpoint.replace(`{${paramId}}`, encodeURIComponent(paramValue));
-      }
-      
-      url += endpoint;
-      
-      // Build request options
-      const options = {
-        method: operation.method || 'GET',
-        headers: {
-          'Accept': 'application/json'
-        }
-      };
-      
-      // Add authentication
-      if (service.authType === 'apikey' && service.key) {
-        options.headers['Authorization'] = `Bearer ${service.key}`;
-      } else if (service.authType === 'basic' && service.key) {
-        options.headers['Authorization'] = `Basic ${btoa(service.key)}`;
-      }
-      
-      // Add body for POST/PUT requests
-      if (['POST', 'PUT', 'PATCH'].includes(options.method) && operation.bodyParam) {
-        options.headers['Content-Type'] = 'application/json';
-        const bodyData = {};
-        
-        // Add non-path params to body
-        for (const paramId in params) {
-          if (!endpoint.includes(`{${paramId}}`)) {
-            bodyData[paramId] = params[paramId];
-          }
-        }
-        
-        options.body = JSON.stringify(bodyData);
-      }
-      
-      // Execute request
-      fetch(url, options)
-        .then(response => {
-          if (!response.ok) {
-            throw new Error(`HTTP error ${response.status}: ${response.statusText}`);
-          }
-          
-          // Parse response based on format
-          if (operation.outputFormat === 'json') {
-            return response.json();
-          } else if (operation.outputFormat === 'csv') {
-            return response.text();
-          } else {
-            return response.text();
-          }
-        })
-        .then(data => {
-          // Process data if needed
-          let formattedData = data;
-          
-          if (operation.outputMapping && typeof operation.outputMapping === 'function') {
-            formattedData = operation.outputMapping(data, params);
-          } else if (typeof data === 'object') {
-            formattedData = JSON.stringify(data, null, 2);
-          }
-          
-          // Display results
-          showApiResults(formattedData, operation.outputFormat);
-          setStatus("API call executed successfully.");
-        })
-        .catch(error => {
-          setStatus(`API error: ${error.message}`, true);
-        });
+    function executeApiCall(service,operation,params){
+      setStatus('Executing API call...');const original=operation.endpoint||'',pathParams=new Set([...original.matchAll(/\{([^}]+)\}/g)].map(m=>m[1]));let endpoint=original;
+      for(const id of pathParams){if(params[id]===undefined||params[id]===''){setStatus('Missing path parameter: '+id,true);return;}endpoint=endpoint.replaceAll('{'+id+'}',encodeURIComponent(params[id]));}
+      let url=(service.baseUrl||'')+endpoint;const method=(operation.method||'GET').toUpperCase(),headers={Accept:'application/json'};
+      if((service.authType==='bearer'||service.authType==='apikey')&&service.key)headers.Authorization='Bearer '+service.key;else if(service.authType==='x-api-key'&&service.key)headers['X-API-Key']=service.key;else if(service.authType==='basic'&&service.key)headers.Authorization='Basic '+btoa(service.key);
+      const nonPath=Object.fromEntries(Object.entries(params).filter(([k])=>!pathParams.has(k))),options={method,headers};
+      if(method==='GET'||method==='DELETE'){const qs=new URLSearchParams(Object.entries(nonPath).filter(([,v])=>v!==''&&v!==undefined)).toString();if(qs)url+=(url.includes('?')?'&':'?')+qs;}
+      else if(Object.keys(nonPath).length){headers['Content-Type']='application/json';options.body=JSON.stringify(nonPath);}
+      fetch(url,options).then(async response=>{if(!response.ok)throw new Error('HTTP '+response.status+': '+response.statusText);const ct=response.headers.get('content-type')||'',data=ct.includes('json')?await response.json():await response.text();if(operation.followForecast&&data?.properties?.forecast){const r=await fetch(data.properties.forecast,{headers:{Accept:'application/geo+json,application/json'}});if(!r.ok)throw new Error('Forecast follow-up HTTP '+r.status);return await r.json();}return data;})
+        .then(data=>{lastApiResult=data;lastApiFormat=operation.outputFormat||(typeof data==='string'?'text':'json');showApiResults(data,lastApiFormat);setStatus('API call executed successfully.');})
+        .catch(error=>setStatus('API error: '+error.message,true));
     }
-    
-    function showApiResults(data, format) {
-      const resultsContainer = document.getElementById('results-container');
-      const resultsView = document.getElementById('results-view');
-      
-      resultsContainer.classList.remove('hide');
-      
-      // Format the results based on type
-      if (format === 'json' && typeof data === 'string') {
-        try {
-          // Try to parse and prettify JSON
-          const parsed = JSON.parse(data);
-          resultsView.innerHTML = `<pre>${syntaxHighlight(JSON.stringify(parsed, null, 2))}</pre>`;
-        } catch (e) {
-          // If not valid JSON, display as text
-          resultsView.innerHTML = `<pre>${escapeHtml(data)}</pre>`;
-        }
-      } else if (format === 'csv' || (typeof data === 'string' && data.includes(','))) {
-        // For CSV, create a table view
-        const lines = data.split(/\r?\n/);
-        
-        if (lines.length > 0) {
-          let tableHtml = '<table>';
-          
-          // Headers
-          const headers = parseCSVLine(lines[0]);
-          tableHtml += '<thead><tr>';
-          headers.forEach(header => {
-            tableHtml += `<th>${escapeHtml(header)}</th>`;
-          });
-          tableHtml += '</tr></thead><tbody>';
-          
-          // Data rows
-          for (let i = 1; i < lines.length; i++) {
-            const cells = parseCSVLine(lines[i]);
-            if (cells.length > 0) {
-              tableHtml += '<tr>';
-              cells.forEach(cell => {
-                tableHtml += `<td>${escapeHtml(cell)}</td>`;
-              });
-              tableHtml += '</tr>';
-            }
-          }
-          
-          tableHtml += '</tbody></table>';
-          resultsView.innerHTML = tableHtml;
-        } else {
-          resultsView.innerHTML = `<pre>${escapeHtml(data)}</pre>`;
-        }
-      } else {
-        // For other formats, display as text
-        resultsView.innerHTML = `<pre>${escapeHtml(data)}</pre>`;
-      }
+    function showApiResults(data,format){
+      lastApiResult=data;lastApiFormat=format||(typeof data==='string'?'text':'json');const container=document.getElementById('results-container'),view=document.getElementById('results-view');container.classList.remove('hide');
+      if(typeof data==='object'){view.innerHTML='<pre>'+syntaxHighlight(JSON.stringify(data,null,2))+'</pre>';return;}
+      const text=String(data??'');if(format==='csv'||looksDelimited(text)){try{view.innerHTML=rowsToHtmlTable(parseDelimitedAuto(text));}catch{view.innerHTML='<pre>'+escapeHtml(text)+'</pre>';}}else view.innerHTML='<pre>'+escapeHtml(text)+'</pre>';
     }
-    
-    function importApiResultsToEditor() {
-      const resultsView = document.getElementById('results-view');
-      const content = resultsView.textContent;
-      
-      if (!content.trim()) {
-        setStatus("No results to import.", true);
-        return;
-      }
-      
-      document.getElementById('toolbox-input').value = content;
-      csvData = content;
-      
-      switchTab('editor');
-      updatePreview();
-      
-      setStatus("API results imported to editor.");
+    function importApiResultsToEditor(){
+      try{if(lastApiResult===null||lastApiResult===undefined)throw new Error('No API results to import.');const rows=typeof lastApiResult==='object'?jsonValueToRows(lastApiResult):parseDelimitedAuto(String(lastApiResult));if(!rows.length)throw new Error('API result contains no importable rows.');csvData=serializeCSV(rows);document.getElementById('toolbox-input').value=csvData;switchTab('editor');updatePreview();setStatus('API results converted to CSV: '+Math.max(0,rows.length-1)+' data rows.');}
+      catch(error){setStatus('Import error: '+error.message,true);}
     }
+
     
     function clearApiResults() {
       document.getElementById('results-view').innerHTML = '';
@@ -2349,103 +1933,18 @@ ${new Date().toISOString().split('T')[0]}
     }
     
     // NOAA Forecast Functions
-    async function getForecastByLocation() {
-      const location = document.getElementById('location').value.trim();
-      const forecastDiv = document.getElementById('forecast');
-      forecastDiv.innerHTML = "Loading...";
-      document.getElementById('forecastChart').style.display = "none";
-      if (forecastChart) {
-        forecastChart.destroy();
-        forecastChart = null;
-      }
-
-      try {
-        // Step 1: Geocode city/zip to lat/lon using Nominatim (OpenStreetMap)
-        const geocodeUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(location)}&format=json&limit=1`;
-        const geoRes = await fetch(geocodeUrl, { headers: { 'User-Agent': 'MITO-Core/1.0' } });
-        const geoData = await geoRes.json();
-        if (!geoData.length) throw new Error("Location not found.");
-        const lat = geoData[0].lat;
-        const lon = geoData[0].lon;
-
-        // Step 2: Get the forecast office and gridpoint info from NOAA
-        const pointsResponse = await fetch(`https://api.weather.gov/points/${lat},${lon}`);
-        if (!pointsResponse.ok) throw new Error("NOAA location not found.");
-        const pointsData = await pointsResponse.json();
-
-        // Step 3: Get the forecast from NOAA
-        const forecastUrl = pointsData.properties.forecast;
-        const forecastResponse = await fetch(forecastUrl);
-        if (!forecastResponse.ok) throw new Error("Forecast not available for this location.");
-        const forecastData = await forecastResponse.json();
-
-        // Step 4: Display the forecast (all available periods)
-        const periods = forecastData.properties.periods;
-        let html = `<h2 style="color:#2563eb; margin-bottom:1em;">Forecast for ${pointsData.properties.relativeLocation.properties.city}, ${pointsData.properties.relativeLocation.properties.state}</h2>`;
-        periods.forEach(period => {
-          html += `<div class="forecast-card">
-            <div class="forecast-title">${period.name}: ${period.shortForecast}, ${period.temperature}&deg;${period.temperatureUnit}</div>
-            <div class="forecast-small">${period.detailedForecast}</div>
-          </div>`;
-        });
-        forecastDiv.innerHTML = html;
-
-        // Step 5: Prepare data for Chart.js and render
-        const ctx = document.getElementById('forecastChart').getContext('2d');
-        const labels = periods.map(p => p.name);
-        const temps = periods.map(p => p.temperature);
-        const unit = periods.length > 0 ? periods[0].temperatureUnit : '';
-        document.getElementById('forecastChart').style.display = "block";
-
-        forecastChart = new Chart(ctx, {
-          type: 'line',
-          data: {
-            labels: labels,
-            datasets: [{
-              label: `Temperature (°${unit})`,
-              data: temps,
-              backgroundColor: 'rgba(54, 162, 235, 0.2)',
-              borderColor: 'rgba(54, 162, 235, 1)',
-              borderWidth: 2,
-              tension: 0.3
-            }]
-          },
-          options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-              title: {
-                display: true,
-                text: `Temperature Trend for ${pointsData.properties.relativeLocation.properties.city}, ${pointsData.properties.relativeLocation.properties.state}`,
-                font: {
-                  size: 16
-                }
-              },
-              legend: {
-                position: 'bottom'
-              }
-            },
-            scales: {
-              y: {
-                title: {
-                  display: true,
-                  text: `Temperature (°${unit})`
-                }
-              }
-            }
-          }
-        });
-
-        // Step 6: Update map
-        updateGoogleMap(
-          pointsData.properties.relativeLocation.properties.city,
-          pointsData.properties.relativeLocation.properties.state
-        );
-
-      } catch (error) {
-        forecastDiv.innerHTML = `<div class="forecast-card" style="background:#fee2e2;"><div class="forecast-title" style="color:#b91c1c;">Error</div><div class="forecast-small">${error.message}</div></div>`;
-      }
+    async function getForecastByLocation(){
+      const location=document.getElementById('location').value.trim(),forecastDiv=document.getElementById('forecast');if(!location){forecastDiv.textContent='Enter a city or ZIP code.';return;}forecastDiv.textContent='Loading...';document.getElementById('forecastChart').style.display='none';if(forecastChart){forecastChart.destroy();forecastChart=null;}
+      try{const geoRes=await fetch('https://nominatim.openstreetmap.org/search?q='+encodeURIComponent(location)+'&format=json&limit=1');if(!geoRes.ok)throw new Error('Geocoding failed ('+geoRes.status+')');const geo=await geoRes.json();if(!geo.length)throw new Error('Location not found.');
+        const pointsResponse=await fetch('https://api.weather.gov/points/'+geo[0].lat+','+geo[0].lon,{headers:{Accept:'application/geo+json,application/json'}});if(!pointsResponse.ok)throw new Error('NOAA location lookup failed ('+pointsResponse.status+')');const points=await pointsResponse.json();
+        const forecastResponse=await fetch(points.properties.forecast,{headers:{Accept:'application/geo+json,application/json'}});if(!forecastResponse.ok)throw new Error('Forecast unavailable ('+forecastResponse.status+')');const forecast=await forecastResponse.json(),periods=forecast.properties?.periods||[];if(!periods.length)throw new Error('Forecast returned no periods.');
+        const city=points.properties?.relativeLocation?.properties?.city||location,state=points.properties?.relativeLocation?.properties?.state||'';let html='<h2 style="color:#2563eb; margin-bottom:1em;">Forecast for '+escapeHtml(city)+(state?', '+escapeHtml(state):'')+'</h2>';
+        for(const p of periods)html+='<div class="forecast-card"><div class="forecast-title">'+escapeHtml(p.name)+': '+escapeHtml(p.shortForecast)+', '+escapeHtml(String(p.temperature))+'&deg;'+escapeHtml(p.temperatureUnit)+'</div><div class="forecast-small">'+escapeHtml(p.detailedForecast)+'</div></div>';
+        forecastDiv.innerHTML=html;const canvas=document.getElementById('forecastChart');canvas.style.display='block';forecastChart=new Chart(canvas.getContext('2d'),{type:'line',data:{labels:periods.map(p=>p.name),datasets:[{label:'Temperature (°'+(periods[0].temperatureUnit||'')+')',data:periods.map(p=>p.temperature),borderWidth:2,tension:0.3}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom'}}}});updateGoogleMap(city,state);setStatus('NOAA forecast loaded.');
+      }catch(error){forecastDiv.innerHTML='<div class="forecast-card"><div class="forecast-title">Error</div><div class="forecast-small">'+escapeHtml(error.message)+'</div></div>';setStatus('Forecast error: '+error.message,true);}
     }
+
+
   </script>
 </body>
 </html>
